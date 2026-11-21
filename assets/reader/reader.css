@@ -1,0 +1,890 @@
+/* ============================================================
+   岛上书店 · 阅读引擎样式（reader.css）
+   所有可调项走 CSS 变量，JS 只改变量 → 文字实时重排，不重载页面
+   ============================================================ */
+
+:root {
+  --r-font-size: 18px;
+  --r-line-height: 2.0;
+  --r-para-gap: 0.8em;
+  --r-margin: 20px;
+  --r-fg: #2b2b2b;
+  --r-bg: #faf8f3;
+  --r-max-width: 720px;
+  /* 字体不加 !important，让书内 .w / .cont 等特殊排版字体赢 */
+  --r-font: "Noto Serif SC", "Source Han Serif SC", "Songti SC", serif;
+}
+
+/* ---------- 主题 ---------- */
+html[data-theme="paper"] { --r-bg: #faf8f3; --r-fg: #2b2b2b; --r-ui: #faf8f3; --r-line: rgba(43, 43, 43, 0.12); }
+html[data-theme="sepia"] { --r-bg: #f5e9d3; --r-fg: #3a2e20; --r-ui: #f5e9d3; --r-line: rgba(58, 46, 32, 0.14); }
+html[data-theme="green"] { --r-bg: #cce8cf; --r-fg: #22301f; --r-ui: #cce8cf; --r-line: rgba(34, 48, 31, 0.16); }
+html[data-theme="night"] { --r-bg: #1c1c1e; --r-fg: #c8c8c8; --r-ui: #1e1e21; --r-line: rgba(200, 200, 200, 0.14); }
+html[data-theme="black"] { --r-bg: #000000; --r-fg: #9a9a9a; --r-ui: #080808; --r-line: rgba(154, 154, 154, 0.16); }
+
+/* ---------- 基础 ---------- */
+html,
+body {
+  background: var(--r-bg) !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  /* 注意：绝不能写 overscroll-behavior-y: contain —— 当前 Android WebView
+     版本收到它会把「触摸滚动」整个禁掉：手指滑动完全不滚，但 scrollTo /
+     点击翻页仍正常。表现为「能点翻页、不能滑动」。 */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+/* 关键：关掉浏览器的滚动锚定。改字号时内容高度会变，
+   浏览器会自作主张调整 scrollTop，跟我们手动恢复阅读位置打架 */
+html {
+  overflow-anchor: none;
+}
+body {
+  overflow-anchor: none;
+}
+
+/* ---------- 文本选择：用系统自带选择（长按选词 + 系统工具栏），顶部提供「修改」入口 ---------- */
+#book,
+#book * {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+  -webkit-touch-callout: default !important;
+}
+
+/* 顶部状态栏：选中文字时出现，中间一个「修改」 */
+.island-topbar {
+  position: fixed;
+  top: 24px;
+  left: 0;
+  right: 0;
+  height: 46px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: #363e4a;
+  color: #fff;
+  z-index: 99997;
+  border-radius: 0 0 14px 14px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18);
+}
+.island-topbar.show { display: flex; }
+.island-topbar .tb-item {
+  color: #fff;
+  font-size: 15px;
+  padding: 7px 22px;
+  border-radius: 8px;
+  -webkit-tap-highlight-color: transparent;
+  cursor: pointer;
+}
+.island-topbar .tb-item:active { background: rgba(255, 255, 255, 0.14); }
+
+/* 字号放大后内容可能横向溢出（长英文串、图片、表格），
+   一旦溢出 WebView 就允许左右拖动，并且在屏幕底部画出一条横向滚动条。
+   真正的滚动容器是 body，所以 html 和 body 两个都要禁横向滚动 —— 只禁 html
+   只能挡住拖动，挡不住 body 自己溢出时画出来的那条横条。 */
+html,
+body {
+  overflow-x: hidden !important;
+  max-width: 100% !important;
+}
+
+/* WebView 原生的滚动条（纵向右侧、横向底部）一律不画。
+   阅读器靠点击翻页和位置恢复，不需要可见滚动条。 */
+html::-webkit-scrollbar,
+body::-webkit-scrollbar,
+#book::-webkit-scrollbar {
+  width: 0 !important;
+  height: 0 !important;
+  display: none !important;
+}
+
+/* ============================================================
+   首屏防跳（兜底）
+   - 正常情况：URL 带 #pos=章节-偏移，reader.js 在 body 结束时就把位置跳好，
+     此时首帧还没绘制，直接看到正确位置，不需要隐藏。
+   - 兜底：拿不到位置（iOS 的 loadFile 不带 hash）时，先藏住正文，
+     等 Flutter 恢复完再显示；2.6 秒后动画强制显示，防止一直空白。
+   ============================================================ */
+html:not([data-rpos]) #book {
+  visibility: hidden;
+  animation: reader-reveal 0s linear 2.6s forwards;
+}
+#book.revealed {
+  visibility: visible !important;
+  animation: none;
+}
+@keyframes reader-reveal {
+  from {
+    visibility: hidden;
+  }
+  to {
+    visibility: visible;
+  }
+}
+
+body {
+  color: var(--r-fg) !important;
+  font-size: var(--r-font-size) !important;
+  line-height: var(--r-line-height) !important;
+  font-family: var(--r-font);
+  text-align: justify;
+  overflow-wrap: break-word;
+  /* 原来是 normal：中文能换行，但长英文/URL/连续数字不换，
+     字号一大就撑破容器、把页面顶宽。改成 break-word 强制断行。 */
+  word-break: break-word;
+  /* 关键：滚动容器就是 body，惯性由系统提供 */
+  -webkit-overflow-scrolling: touch;
+}
+
+/* ---------- 正文容器 ---------- */
+#book {
+  max-width: var(--r-max-width);
+  margin: 0 auto;
+  /* 让正文建立独立层叠层（z-index:0），顶部 fixed 章节名区（z-index:19）才能压住它。
+     否则 WebView 会把滚动的正文提升到合成层，fixed 背景盖不住文字。 */
+  position: relative;
+  z-index: 0;
+  /* 用 --app-h（首次加载时固化的视口高度）而不是 vh：
+     唤出工具栏时系统状态栏出现，WebView 的 innerHeight 会缩 10+px，
+     vh 跟着变会让正文整体轻微跳动。 */
+  padding: calc(var(--r-margin) + var(--app-h, 100vh) * 0.08)
+           var(--r-margin)
+           calc(var(--r-margin) + var(--app-h, 100vh) * 0.3)
+           var(--r-margin);
+}
+
+/* 书籍自带的 CSS 里，章标题一类元素常写成「固定宽度 + 大左内边距」，
+   而默认盒模型是 content-box，宽度不含内边距 —— 于是整段比正文区还宽，
+   把 body 顶出屏幕。字号一大就更明显，WebView 就在屏幕底部画一条横向滚动条。
+   统一改成 border-box 并夹住最大宽度，从源头消掉横向溢出。 */
+#book,
+#book * {
+  box-sizing: border-box;
+}
+#book * {
+  max-width: 100% !important;
+}
+
+/* 章节之间只留呼吸感，不做视觉分割 —— 保持连续阅读的错觉 */
+#book section.ch {
+  display: block;
+}
+#book section.ch + section.ch {
+  margin-top: 2.2em;
+}
+
+/* ---------- 段落 ---------- */
+#book p {
+  line-height: var(--r-line-height) !important;
+  margin: var(--r-para-gap) 0 !important;
+  /* text-indent 交给书内 CSS 决定，不强行覆盖 */
+}
+
+/* 标题：只压颜色和行距，字号仍按书内相对值放大 */
+#book h1,
+#book h2,
+#book h3,
+#book h4,
+#book h5,
+#book h6 {
+  color: var(--r-fg) !important;
+  line-height: 1.45 !important;
+  margin: 1.8em 0 0.9em !important;
+}
+
+/* ---------- 图片 ---------- */
+#book img,
+#book svg,
+#book image {
+  /* 书内常见 img{width:100%}，会把小图糊掉，这里改回按原始比例 */
+  width: auto !important;
+  max-width: 100% !important;
+  height: auto !important;
+  display: block;
+  margin: 1.1em auto;
+}
+
+/* 夜间模式下压一压图片亮度，别刺眼 */
+html[data-theme="night"] #book img,
+html[data-theme="black"] #book img {
+  filter: brightness(0.8) contrast(0.92);
+}
+
+/* ---------- 表格 / 列表 / 引用 ---------- */
+#book table {
+  max-width: 100%;
+  border-collapse: collapse;
+  margin: 1em auto;
+}
+#book td,
+#book th {
+  padding: 0.25em 0.5em;
+}
+#book blockquote {
+  margin: 1em 1.4em;
+  opacity: 0.9;
+}
+
+/* ---------- 选中文字 ---------- */
+::selection {
+  background: rgba(122, 106, 88, 0.28);
+}
+
+/* ============================================================
+   HUD（顶部 + 底部工具栏）
+   ============================================================ */
+/* 顶部章节名区：由 Flutter 层绘制（WebView 内 fixed 会被正文合成层盖住），
+   这里只保留隐藏规则，兼容旧版本遗留的节点 */
+.island-chapter {
+  display: none !important;
+}
+
+.hud {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 20;
+  pointer-events: none;
+}
+.hud.hidden {
+  pointer-events: none;
+}
+.hud.hidden > * {
+  pointer-events: none;
+}
+.hud > * {
+  pointer-events: auto;
+}
+
+/* 顶部书籍名栏：改由 Flutter 层绘制（这样才能真正「盖住」上面的章节名区，
+   WebView 里的 fixed 元素盖不住 Flutter 层的章节名）。这里整栏隐藏。 */
+.hud-bar {
+  display: none !important;
+}
+.hud-bar-legacy {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 5.2vh;
+  min-height: 30px;
+  padding: var(--safe-top, 0px) 6px 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--r-ui);
+  border-bottom: 1px solid var(--r-line);
+  color: var(--r-fg);
+  transform: translateY(-100%);
+  transition: transform 0.3s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+.hud:not(.hidden) .hud-bar { transform: translateY(0); }
+.hud-bar button {
+  background: none;
+  border: 0;
+  color: inherit;
+  font-size: 18px;
+  line-height: 1;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  cursor: pointer;
+  border-radius: 8px;
+}
+.hud-bar button:active {
+  background: rgba(128, 128, 128, 0.18);
+}
+#hudTitle {
+  flex: 1;
+  font-size: 14px;
+  line-height: 1.2;
+  opacity: 0.88;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 底部工具栏：从底部滑入 */
+.hud-bottom {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  /* 底部留白压到约原来的 1/3（安全区只保留 35%，避免按钮压到手势条） */
+  padding: 4px 14px calc(2px + env(safe-area-inset-bottom, 0px) * 0.35);
+  background: var(--r-ui);
+  border-top: 1px solid var(--r-line);
+  color: var(--r-fg);
+  transform: translateY(100%);
+  transition: transform 0.3s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+.hud:not(.hidden) .hud-bottom { transform: translateY(0); }
+/* 进度条两侧的「上一章 / 下一章」 */
+.hud-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.hud-nav > input[type="range"] {
+  flex: 1;
+  min-width: 0;
+}
+.hud-nav button {
+  flex: 0 0 auto;
+  height: 26px;
+  padding: 0 8px;
+  border: 0;
+  background: transparent;
+  color: var(--r-fg);
+  font-size: 12px;
+  font-family: inherit;
+  border-radius: 7px;
+  opacity: 0.72;
+  cursor: pointer;
+  white-space: nowrap;
+  -webkit-tap-highlight-color: transparent;
+}
+.hud-nav button:active {
+  background: rgba(128, 128, 128, 0.16);
+}
+
+.hud-chapter {
+  /* 章节名已移到顶部栏，这里不再重复显示 */
+  display: none !important;
+}
+.hud-row {
+  display: flex;
+  justify-content: center;
+  font-size: 12px;
+  opacity: 0.6;
+  margin-top: 2px;
+}
+
+/* 进度条 */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 20px;
+  background: transparent;
+  cursor: pointer;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(128, 128, 128, 0.32);
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  margin-top: -6.5px;
+  border-radius: 50%;
+  background: #7a6a58;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+}
+input[type="range"]::-moz-range-track {
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(128, 128, 128, 0.32);
+}
+input[type="range"]::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border: 0;
+  border-radius: 50%;
+  background: #7a6a58;
+}
+
+/* ============================================================
+   设置面板
+   ============================================================ */
+.panel {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 30;
+  background: var(--r-ui);
+  border-radius: 18px 18px 0 0;
+  border-top: 1px solid var(--r-line);
+  box-shadow: 0 -8px 28px rgba(0, 0, 0, 0.1);
+  padding: 8px 20px calc(20px + env(safe-area-inset-bottom, 0px));
+  color: var(--r-fg);
+  transition: transform 0.26s cubic-bezier(0.32, 0.72, 0, 1), opacity 0.2s;
+  touch-action: none;
+}
+.panel.hidden {
+  transform: translateY(110%);
+  opacity: 0;
+  pointer-events: none;
+}
+.panel-handle {
+  width: 36px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(128, 128, 128, 0.4);
+  margin: 6px auto 14px;
+}
+.panel-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+}
+/* 行与行之间留出呼吸空间：字号行和字体行之前是紧贴的 */
+.panel-row + .panel-row {
+  margin-top: 14px;
+}
+
+.panel-label {
+  width: 38px;
+  font-size: 13px;
+  opacity: 0.66;
+  flex-shrink: 0;
+}
+.panel-val {
+  width: 30px;
+  text-align: center;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+.step {
+  width: 42px;
+  height: 34px;
+  border-radius: 9px;
+  border: 1px solid var(--r-line);
+  background: transparent;
+  color: inherit;
+  font-size: 15px;
+  cursor: pointer;
+}
+.step:active {
+  background: rgba(128, 128, 128, 0.2);
+}
+.slider {
+  flex: 1;
+  min-width: 0;
+}
+.themes {
+  gap: 6px;
+  padding-top: 6px;
+  flex-wrap: nowrap;
+}
+.theme {
+  flex: 1;
+  padding: 8px 2px;
+  border-radius: 9px;
+  border: 1px solid var(--r-line);
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+}
+.theme[aria-pressed="true"] {
+  outline: 2px solid #7a6a58;
+  outline-offset: 1px;
+}
+
+/* ============================================================
+   底部按钮行
+   ============================================================ */
+.hud-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 3px;
+  padding-top: 3px;
+  border-top: 1px solid var(--r-line);
+}
+.hud-actions button {
+  flex: 1;
+  height: 32px;
+  border: 0;
+  background: transparent;
+  color: var(--r-fg);
+  font-size: 13px;
+  font-family: inherit;
+  border-radius: 8px;
+  cursor: pointer;
+  opacity: 0.85;
+}
+.hud-actions button:active {
+  background: rgba(128, 128, 128, 0.16);
+}
+
+/* ============================================================
+   目录抽屉
+   ============================================================ */
+.toc-mask {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 40;
+  background: rgba(0, 0, 0, 0.34);
+  transition: opacity 0.22s ease;
+}
+.toc-mask.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.toc {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  z-index: 41;
+  width: 78%;
+  max-width: 320px;
+  background: var(--r-ui);
+  color: var(--r-fg);
+  box-shadow: 2px 0 26px rgba(0, 0, 0, 0.18);
+  display: flex;
+  flex-direction: column;
+  transition: transform 0.26s cubic-bezier(0.32, 0.72, 0, 1);
+}
+.toc.hidden {
+  transform: translateX(-101%);
+}
+.toc-head {
+  padding: calc(16px + env(safe-area-inset-top, 0px)) 20px 12px;
+  font-size: 17px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--r-line);
+  font-family: "Noto Serif SC", "Songti SC", serif;
+  letter-spacing: 0.08em;
+}
+.toc-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 0 calc(24px + env(safe-area-inset-bottom, 0px));
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+.toc-item {
+  display: block;
+  width: 100%;
+  padding: 11px 20px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 14px;
+  line-height: 1.45;
+  text-align: left;
+  font-family: inherit;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  position: relative;
+  opacity: 0.88;
+}
+.toc-item:active {
+  background: rgba(128, 128, 128, 0.12);
+}
+.toc-item[data-l="1"] {
+  padding-left: 34px;
+  font-size: 13px;
+  opacity: 0.8;
+}
+.toc-item[data-l="2"] {
+  padding-left: 48px;
+  font-size: 13px;
+  opacity: 0.72;
+}
+.toc-item.active {
+  color: #7a6a58;
+  font-weight: 600;
+  opacity: 1;
+}
+.toc-item.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 9px;
+  bottom: 9px;
+  width: 3px;
+  border-radius: 0 2px 2px 0;
+  background: #7a6a58;
+}
+html[data-theme="night"] .toc-item.active,
+html[data-theme="black"] .toc-item.active {
+  color: #d8c8a8;
+}
+html[data-theme="night"] .toc-item.active::before,
+html[data-theme="black"] .toc-item.active::before {
+  background: #d8c8a8;
+}
+
+/* ============================================================
+   v2 追加：面板滚动、字体选择、书签、toast
+   ============================================================ */
+
+/* 设置项变多了，面板要能滚 */
+.panel {
+  max-height: 72vh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* ---------- 字体选择 ---------- */
+.font-row {
+  display: flex;
+  gap: 7px;
+  flex: 1;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  -webkit-overflow-scrolling: touch;
+}
+.font-btn {
+  flex: 0 0 auto;
+  /* 横向内边距从 13px 收到 9px：字体按钮变成 5 个后，
+     原来的尺寸会超出屏幕、把最后一个「文楷」挤掉一半。 */
+  padding: 7px 9px;
+  border-radius: 9px;
+  border: 1px solid var(--r-line);
+  background: transparent;
+  color: inherit;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.font-btn[aria-pressed="true"] {
+  /* outline 是向外扩的，而 .font-row 有 overflow-x:auto，
+     会把外扩的上下边裁掉，看起来就是「选中框缺一截」。
+     改成内阴影：画在元素内部，不受任何裁剪影响。 */
+  box-shadow: inset 0 0 0 2px #7a6a58;
+  border-color: #7a6a58;
+}
+
+/* ---------- 功能面板的单选/多选小胶囊 ---------- */
+.chip-row {
+  display: flex;
+  gap: 6px;
+  flex: 1;
+  flex-wrap: nowrap;
+}
+.chip {
+  flex: 0 0 auto;
+  padding: 6px 9px;
+  border-radius: 8px;
+  border: 1px solid var(--r-line);
+  background: transparent;
+  color: inherit;
+  font-size: 12.5px;
+  font-family: inherit;
+  line-height: 1.3;
+  cursor: pointer;
+  white-space: nowrap;
+  -webkit-tap-highlight-color: transparent;
+}
+.chip[aria-pressed="true"] {
+  box-shadow: inset 0 0 0 2px #7a6a58;
+  border-color: #7a6a58;
+}
+/* 功能面板的标签是四个字，需要比 38px 宽 */
+.panel[data-mode="func"] .panel-label {
+  width: auto;
+  flex: 0 0 auto;
+  white-space: nowrap;
+  font-size: 12.5px;
+}
+
+/* 关掉「滑动翻页」时锁死滚动 */
+html.no-scroll,
+html.no-scroll body {
+  overflow: hidden !important;
+}
+
+/* ---------- 开关行 ---------- */
+.switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 46px;
+}
+.switch-row .panel-label {
+  width: auto;
+  flex: 1;
+}
+.switch {
+  position: relative;
+  width: 44px;
+  height: 26px;
+  border-radius: 13px;
+  background: rgba(128, 128, 128, 0.32);
+  border: 0;
+  cursor: pointer;
+  transition: background 0.18s;
+  flex: 0 0 auto;
+}
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  transition: transform 0.18s;
+}
+.switch[aria-checked="true"] {
+  background: #7a6a58;
+}
+.switch[aria-checked="true"]::after {
+  transform: translateX(18px);
+}
+
+/* ---------- toast ---------- */
+.r-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 16%;
+  transform: translateX(-50%) translateY(10px);
+  z-index: 60;
+  padding: 10px 18px;
+  border-radius: 10px;
+  background: rgba(28, 28, 30, 0.88);
+  color: #f2f2f2;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s, transform 0.2s;
+  max-width: 80vw;
+  text-align: center;
+}
+.r-toast.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* ---------- 目录 / 书签 两个 Tab ---------- */
+.toc-head {
+  /* 46px 是为了避开 Android 状态栏：WebView 里 env(safe-area-inset-top)
+     经常返回 0，原来 14px 不够，导致「目录 / 书签」标签被状态栏盖住 */
+  padding: calc(46px + env(safe-area-inset-top, 0px)) 20px 0;
+  border-bottom: 1px solid var(--r-line);
+  display: block;
+  font-family: inherit;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+.toc-tabs {
+  display: flex;
+  gap: 22px;
+}
+.toc-tab {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 16px;
+  font-family: "Noto Serif SC", "Songti SC", serif;
+  letter-spacing: 0.06em;
+  padding: 0 0 11px;
+  cursor: pointer;
+  opacity: 0.45;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.toc-tab.active {
+  opacity: 1;
+  font-weight: 600;
+  border-bottom-color: #7a6a58;
+}
+
+/* ---------- 书签列表 ---------- */
+.bm-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0 calc(24px + env(safe-area-inset-bottom, 0px));
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+.bm-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 15px 18px;
+  border: 0;
+  border-bottom: 1px solid var(--r-line);
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  cursor: pointer;
+  position: relative;
+}
+.bm-item:active {
+  background: rgba(128, 128, 128, 0.1);
+}
+.bm-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #7a6a58;
+  padding-right: 52px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bm-time {
+  font-size: 11px;
+  opacity: 0.45;
+  margin-top: 4px;
+}
+.bm-excerpt {
+  font-size: 13px;
+  line-height: 1.65;
+  margin-top: 9px;
+  /* 给右下角的百分比留位置，避免长文本压到它 */
+  padding-right: 54px;
+  opacity: 0.82;
+  display: -webkit-box;
+  -webkit-line-clamp: 5;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.bm-pct {
+  position: absolute;
+  right: 18px;
+  bottom: 15px;
+  font-size: 11px;
+  opacity: 0.45;
+  font-variant-numeric: tabular-nums;
+}
+.bm-empty {
+  padding: 60px 24px;
+  text-align: center;
+  font-size: 13px;
+  line-height: 1.8;
+  opacity: 0.5;
+}
+html[data-theme="night"] .bm-title,
+html[data-theme="black"] .bm-title {
+  color: #d8c8a8;
+}
+html[data-theme="night"] .toc-tab.active,
+html[data-theme="black"] .toc-tab.active {
+  border-bottom-color: #d8c8a8;
+}
+
+/* ============================================================
+   v3：设置面板分成「字体」和「主题」两组
+   点「字体」只出现字号+字体，点「主题」只出现主题/行距/段距/边距/翻页开关
+   ============================================================ */
+.panel[data-mode="font"] [data-row="theme"],
+.panel[data-mode="font"] [data-row="func"],
+.panel[data-mode="theme"] [data-row="font"],
+.panel[data-mode="theme"] [data-row="func"],
+.panel[data-mode="func"] [data-row="font"],
+.panel[data-mode="func"] [data-row="theme"] {
+  display: none !important;
+}
