@@ -943,7 +943,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: TextStyle(
-                                fontSize: 16,
+                                fontSize: 18,
                                 fontWeight: FontWeight.w600,
                                 color: theme.fg.withValues(alpha: 0.92),
                               ),

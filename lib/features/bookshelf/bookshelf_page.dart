@@ -46,6 +46,8 @@ class _BookshelfPageState extends State<BookshelfPage> {
   /// list / grid
   String _viewMode = 'list';
   bool _showRecent = true;
+  /// 分组是否排在书籍上方（设置里可切换）
+  bool _groupsTop = true;
 
   /// recent（最近阅读）/ name（文件名）/ manual（手动拖动）
   String _sortMode = 'recent';
@@ -232,6 +234,7 @@ class _BookshelfPageState extends State<BookshelfPage> {
     setState(() {
       _viewMode = sp.getString('shelf.viewMode') ?? 'list';
       _showRecent = sp.getBool('shelf.showRecent') ?? true;
+      _groupsTop = sp.getBool('shelf.groupsTop.${widget.groupId ?? 'root'}') ?? true;
       _sortMode = sp.getString('shelf.sort.${widget.groupId ?? 'root'}') ?? 'recent';
       _rootName = sp.getString('shelf.rootName') ?? '书架';
     });
@@ -242,6 +245,7 @@ class _BookshelfPageState extends State<BookshelfPage> {
     final sp = await SharedPreferences.getInstance();
     await sp.setString('shelf.viewMode', _viewMode);
     await sp.setBool('shelf.showRecent', _showRecent);
+    await sp.setBool('shelf.groupsTop.${widget.groupId ?? 'root'}', _groupsTop);
     await sp.setString('shelf.sort.${widget.groupId ?? 'root'}', _sortMode);
   }
 
@@ -885,6 +889,43 @@ class _BookshelfPageState extends State<BookshelfPage> {
   // 布局设置
   // ==================================================================
 
+  /// 排序方式的小按钮。
+  /// 刻意不用 SegmentedButton —— 它点击「已选中」的段不会回调，
+  /// 导致「已经是手动排序」时再点「手动」没反应。这里每次点击都生效。
+  Widget _sortChip(BuildContext ctx, StateSetter setSheet, String label, String value) {
+    final on = _sortMode == value;
+    return Padding(
+      padding: const EdgeInsets.only(left: 6),
+      child: GestureDetector(
+        onTap: () {
+          setSheet(() => _sortMode = value);
+          setState(() => _manualEditing = value == 'manual');
+          _savePrefs();
+          _load();
+          if (value == 'manual') Navigator.pop(ctx);
+        },
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          decoration: BoxDecoration(
+            color: on ? AppColors.accent.withValues(alpha: 0.14) : Colors.transparent,
+            borderRadius: BorderRadius.circular(9),
+            border: Border.all(
+              color: on ? AppColors.accent : AppColors.ink2.withValues(alpha: 0.28),
+            ),
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: on ? FontWeight.w600 : FontWeight.w400,
+              color: on ? AppColors.accent : AppColors.ink,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Future<void> _showLayoutSettings() async {
     await showModalBottomSheet(
       context: context,
@@ -915,6 +956,16 @@ class _BookshelfPageState extends State<BookshelfPage> {
                   _load();
                 },
               ),
+              SwitchListTile(
+                title: const Text('分组排在书籍上方'),
+                subtitle: const Text('关闭后书籍在前，分组落到下方'),
+                value: _groupsTop,
+                onChanged: (v) {
+                  setSheetState(() => _groupsTop = v);
+                  setState(() {});
+                  _savePrefs();
+                },
+              ),
               ListTile(
                 title: const Text('排列方式', maxLines: 1, softWrap: false),
                 subtitle: Text(_viewMode == 'list' ? '列表（一本书一行）' : '网格（三列封面）'),
@@ -941,37 +992,15 @@ class _BookshelfPageState extends State<BookshelfPage> {
               ),
               ListTile(
                 title: const Text('排序方式', maxLines: 1, softWrap: false),
-                trailing: SegmentedButton<String>(
-                  showSelectedIcon: false,
-                  style: SegmentedButton.styleFrom(
-                    visualDensity: VisualDensity.compact,
-                    padding: const EdgeInsets.symmetric(horizontal: 6),
-                    textStyle: const TextStyle(fontSize: 13),
-                  ),
-                  segments: const [
-                    ButtonSegment(value: 'recent', label: Text('最近')),
-                    ButtonSegment(value: 'name', label: Text('文件名')),
-                    ButtonSegment(value: 'manual', label: Text('手动')),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _sortChip(ctx, setSheetState, '最近', 'recent'),
+                    _sortChip(ctx, setSheetState, '文件名', 'name'),
+                    _sortChip(ctx, setSheetState, '手动', 'manual'),
                   ],
-                  selected: {_sortMode},
-                  onSelectionChanged: (s) {
-                    setSheetState(() => _sortMode = s.first);
-                    // 选手动排序就进入编辑态；选其它方式退出编辑态
-                    _manualEditing = s.first == 'manual';
-                    setState(() {});
-                    _savePrefs();
-                    _load();
-                  },
                 ),
               ),
-              if (_sortMode == 'manual')
-                const Padding(
-                  padding: EdgeInsets.fromLTRB(20, 0, 20, 8),
-                  child: Text(
-                    '长按书籍调整顺序',
-                    style: TextStyle(fontSize: 12, color: AppColors.ink2),
-                  ),
-                ),
               ListTile(
                 leading: const Icon(Icons.wifi, size: 20),
                 title: const Text('WiFi 传书'),
@@ -1081,8 +1110,10 @@ class _BookshelfPageState extends State<BookshelfPage> {
   /// 每行不注册长按（长按手势会吃掉 ReorderableListView 的拖动），
   /// 拖动只能从右侧把手发起，点击其他区域正常打开。
   Widget _buildManualSortView() {
-    final groupCount = _childGroups.length;
-    final totalCount = groupCount + _books.length;
+    final groups = _childGroups;
+    final books = _books;
+    final gFirst = _groupsTop;
+    final total = groups.length + books.length;
     return Scaffold(
       body: SafeArea(
         bottom: false,
@@ -1093,22 +1124,24 @@ class _BookshelfPageState extends State<BookshelfPage> {
               _buildManualSortHeader(),
               if (widget.isRoot && _showRecent && _recent.isNotEmpty)
                 _RecentStrip(books: _recent, onTap: (b, r) => _openBook(b, from: r)),
-              const Padding(
-                padding: EdgeInsets.fromLTRB(20, 6, 20, 2),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 6, 20, 2),
                 child: Text(
-                  '按住右侧把手拖动排序',
-                  style: TextStyle(fontSize: 12, color: AppColors.ink2),
+                  gFirst ? '按住右侧把手拖动排序（分组在上、书籍在下）' : '按住右侧把手拖动排序（书籍在上、分组在下）',
+                  style: const TextStyle(fontSize: 12, color: AppColors.ink2),
                 ),
               ),
             ],
           ),
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 40),
-          itemCount: totalCount,
+          itemCount: total,
           onReorder: _onReorder,
           buildDefaultDragHandles: false,
           itemBuilder: (ctx, i) {
-            if (i < groupCount) {
-              final g = _childGroups[i];
+            final isGroupPos = gFirst ? i < groups.length : i >= books.length;
+            if (isGroupPos) {
+              final gi = gFirst ? i : i - books.length;
+              final g = groups[gi];
               return _GroupRow(
                 key: ValueKey('group_${g.id}'),
                 group: g,
@@ -1118,7 +1151,8 @@ class _BookshelfPageState extends State<BookshelfPage> {
                 trailing: _dragHandle(i),
               );
             }
-            final b = _books[i - groupCount];
+            final bi = gFirst ? i - groups.length : i;
+            final b = books[bi];
             return _BookRow(
               key: ValueKey('book_${b.id}'),
               book: b,
@@ -1177,33 +1211,39 @@ class _BookshelfPageState extends State<BookshelfPage> {
   }
 
   /// 拖动结束：本地换位 + 落库。
-  /// 分组和书籍各自成段（分组在前、书籍在后），不允许跨段交换。
+  /// 分组和书籍各自成段（哪段在前由 _groupsTop 决定），段内可自由排序，跨段忽略。
   Future<void> _onReorder(int oldIndex, int newIndex) async {
-    final groupCount = _childGroups.length;
-    final totalCount = groupCount + _books.length;
+    final groups = _childGroups;
+    final books = _books;
+    final gFirst = _groupsTop;
+    final gCount = groups.length;
+    final total = gCount + books.length;
     if (newIndex > oldIndex) newIndex -= 1;
-    if (newIndex < 0 || newIndex >= totalCount) return;
+    if (newIndex < 0 || newIndex >= total) return;
 
-    final oldIsGroup = oldIndex < groupCount;
-    final newIsGroup = newIndex < groupCount;
-    // 跨段拖动：直接忽略，item 回到原位
-    if (oldIsGroup != newIsGroup) return;
+    bool inGroupSegment(int i) => gFirst ? i < gCount : i >= books.length;
+    // 跨段拖动：直接忽略
+    if (inGroupSegment(oldIndex) != inGroupSegment(newIndex)) return;
 
     setState(() {
-      if (oldIsGroup) {
-        final g = _childGroups.removeAt(oldIndex);
-        _childGroups.insert(newIndex, g);
+      if (inGroupSegment(oldIndex)) {
+        final from = gFirst ? oldIndex : oldIndex - books.length;
+        final to = gFirst ? newIndex : newIndex - books.length;
+        final g = groups.removeAt(from);
+        groups.insert(to, g);
       } else {
-        final b = _books.removeAt(oldIndex - groupCount);
-        _books.insert(newIndex - groupCount, b);
+        final from = gFirst ? oldIndex - gCount : oldIndex;
+        final to = gFirst ? newIndex - gCount : newIndex;
+        final b = books.removeAt(from);
+        books.insert(to, b);
       }
     });
 
-    if (oldIsGroup) {
-      final ids = _childGroups.map((g) => g.id).whereType<int>().toList();
+    if (inGroupSegment(oldIndex)) {
+      final ids = groups.map((g) => g.id).whereType<int>().toList();
       await _repo.updateGroupSortOrders(ids);
     } else {
-      final ids = _books.map((b) => b.id).whereType<int>().toList();
+      final ids = books.map((b) => b.id).whereType<int>().toList();
       await _repo.updateSortOrders(ids);
     }
   }
@@ -1421,19 +1461,17 @@ class _BookshelfPageState extends State<BookshelfPage> {
     final groupRows = <Widget>[
       for (final g in _childGroups)
         _GroupRow(
+          key: ValueKey('group_${g.id}'),
           group: g,
           onTap: () => _openGroup(g),
           onCoverTap: () => _openGroupDetail(g),
           onLongPress: () => _showGroupMenu(g),
         ),
     ];
-
-    // 手动排序模式在 build() 里已经单独走了 _buildManualSortView，
-    // 这里只处理普通列表（长按进入多选）
-    final children = <Widget>[
-      ...groupRows,
+    final bookRows = <Widget>[
       for (final b in _books)
         _BookRow(
+          key: ValueKey('book_${b.id}'),
           book: b,
           selectMode: _selectMode,
           selected: _selected.contains(b.id),
@@ -1444,6 +1482,11 @@ class _BookshelfPageState extends State<BookshelfPage> {
         ),
     ];
 
+    // 分组在上还是在下，由设置里的开关决定
+    final children = _groupsTop
+        ? <Widget>[...groupRows, ...bookRows]
+        : <Widget>[...bookRows, ...groupRows];
+
     return SliverPadding(
       padding: const EdgeInsets.symmetric(horizontal: 16),
       sliver: SliverList(delegate: SliverChildListDelegate(children)),
@@ -1451,41 +1494,47 @@ class _BookshelfPageState extends State<BookshelfPage> {
   }
 
   Widget _buildGridSliver() {
+    final groupBlock = <Widget>[
+      for (final g in _childGroups)
+        _GroupRow(
+          group: g,
+          onTap: () => _openGroup(g),
+          onCoverTap: () => _openGroupDetail(g),
+          onLongPress: () => _showGroupMenu(g),
+        ),
+      if (_childGroups.isNotEmpty) const SizedBox(height: 10),
+    ];
+    final gridBlock = <Widget>[
+      GridView.builder(
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
+        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: 3,
+          crossAxisSpacing: 15,
+          mainAxisSpacing: 20,
+          // 用固定高度而不是宽高比：宽高比在不同屏宽下会算错，
+          // 之前 0.50 就导致书名第二行被挤出 14px
+          mainAxisExtent: 226,
+        ),
+        itemCount: _books.length,
+        itemBuilder: (context, i) => _BookCard(
+          book: _books[i],
+          selectMode: _selectMode,
+          selected: _selected.contains(_books[i].id),
+          onTap: () => _selectMode ? _toggleSelect(_books[i]) : _openBook(_books[i]),
+          onCoverTap: _selectMode ? null : () => _openBookDetail(_books[i]),
+          onOpen: _selectMode ? null : (r) => _openBook(_books[i], from: r),
+          onLongPress: () =>
+              _selectMode ? _toggleSelect(_books[i]) : _enterSelect(_books[i]),
+        ),
+      ),
+    ];
+
     return SliverPadding(
       padding: const EdgeInsets.symmetric(horizontal: 20),
       sliver: SliverList(
         delegate: SliverChildListDelegate([
-          for (final g in _childGroups)
-            _GroupRow(
-              group: g,
-              onTap: () => _openGroup(g),
-              onCoverTap: () => _openGroupDetail(g),
-              onLongPress: () => _showGroupMenu(g),
-            ),
-          const SizedBox(height: 10),
-          GridView.builder(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 3,
-              crossAxisSpacing: 15,
-              mainAxisSpacing: 20,
-              // 用固定高度而不是宽高比：宽高比在不同屏宽下会算错，
-              // 之前 0.50 就导致书名第二行被挤出 14px
-              mainAxisExtent: 226,
-            ),
-            itemCount: _books.length,
-            itemBuilder: (context, i) => _BookCard(
-              book: _books[i],
-              selectMode: _selectMode,
-              selected: _selected.contains(_books[i].id),
-              onTap: () => _selectMode ? _toggleSelect(_books[i]) : _openBook(_books[i]),
-              onCoverTap: _selectMode ? null : () => _openBookDetail(_books[i]),
-              onOpen: _selectMode ? null : (r) => _openBook(_books[i], from: r),
-              onLongPress: () =>
-                  _selectMode ? _toggleSelect(_books[i]) : _enterSelect(_books[i]),
-            ),
-          ),
+          if (_groupsTop) ...[...groupBlock, ...gridBlock] else ...[...gridBlock, ...groupBlock],
         ]),
       ),
     );
@@ -2036,3 +2085,4 @@ class _BookCard extends StatelessWidget {
         ),
       );
 }
+

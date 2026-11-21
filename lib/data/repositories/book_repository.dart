@@ -97,9 +97,27 @@ class BookRepository {
     return Book.fromMap(rows.first);
   }
 
+  /// 分组和书共用一个递增序号空间。
+  /// 取两张表的最大值 +1，保证新建的分组/书都排在最后，
+  /// 同时分组可以被拖到书的下面（不再受「分组必须在前」的限制）。
+  Future<int> nextSortOrder() async {
+    final db = await AppDatabase.instance;
+    final rows = await db.rawQuery(
+      'SELECT MAX(m) AS m FROM ('
+      'SELECT sort_order AS m FROM groups UNION ALL '
+      'SELECT sort_order AS m FROM books'
+      ')',
+    );
+    final v = rows.isEmpty ? null : rows.first['m'];
+    return ((v as num?)?.toInt() ?? 0) + 1;
+  }
+
   Future<int> insertBook(Book book) async {
     final db = await AppDatabase.instance;
-    return db.insert('books', book.toMap());
+    final map = book.toMap();
+    // 新书默认排序值是 0，放进共用空间会跑到最前面 —— 改成排到最后
+    if (book.sortOrder == 0) map['sort_order'] = await nextSortOrder();
+    return db.insert('books', map);
   }
 
   Future<void> insertChapters(List<Chapter> chapters) async {
@@ -182,7 +200,7 @@ class BookRepository {
              ORDER BY b2.added_at ASC LIMIT 1)
         ) AS cover_path
       FROM groups g
-      ORDER BY g.sort_order ASC, g.name ASC
+      ORDER BY g.sort_order ASC, g.created_at ASC
     ''');
     final list = rows.map(BookGroup.fromMap).toList();
 
@@ -251,7 +269,8 @@ class BookRepository {
     return db.insert('groups', {
       'name': name,
       'parent_id': parentId,
-      'sort_order': 0,
+      // 用共用序号空间，新分组排在最后（而不是永远跑到第一个）
+      'sort_order': await nextSortOrder(),
       'created_at': DateTime.now().millisecondsSinceEpoch,
     });
   }

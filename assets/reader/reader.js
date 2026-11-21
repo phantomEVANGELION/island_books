@@ -476,6 +476,25 @@ var S2T_SRC = "㐷\u0001㐹\u0001㐽\u0001㑇\u0001㑈\u0001㑔\u0001㑩\u0001�
     }, 400);
   }
 
+  /// 立刻上报一次位置。
+  /// 滚动后 400ms 内就退出阅读页的话，防抖还没触发 → 最后那一点位移会丢。
+  /// 切后台 / 页面卸载时补一次，保证「离开时的位置」是准的。
+  function flushPosition() {
+    if (restoring) return;
+    clearTimeout(saveTimer);
+    var a = captureAnchor();
+    var max = document.documentElement.scrollHeight - window.innerHeight;
+    notifyFlutter("onProgress", {
+      spine: curSpine,
+      offset: a && a.offset != null ? a.offset : 0,
+      percent: max > 0 ? Math.min(1, Math.max(0, window.scrollY / max)) : 0,
+    });
+  }
+  window.addEventListener("pagehide", flushPosition);
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "hidden") flushPosition();
+  });
+
   /* ---------- 跳转 ---------- */
   function scrollToPercent(p) {
     var max = document.documentElement.scrollHeight - window.innerHeight;
@@ -519,8 +538,16 @@ var S2T_SRC = "㐷\u0001㐹\u0001㐽\u0001㑇\u0001㑈\u0001㑔\u0001㑩\u0001�
       }
       revealContent();
 
+      // 记录「定位完成时」的滚动位置：700ms 后如果用户已经自己滚动过，
+      // 就不要校正了，否则会把人从正在读的地方拽回保存点。
+      var settledY = window.scrollY;
+
       // 图片解码后页面高度还会变，稍后再校正一次
       setTimeout(function () {
+        if (Math.abs(window.scrollY - settledY) > 6) {
+          restoring = false;
+          return;
+        }
         // 校正时先藏再显示（同一帧内完成，不会闪）
         var b = document.getElementById("book");
         if (b) b.classList.remove("revealed");
@@ -700,13 +727,25 @@ var S2T_SRC = "㐷\u0001㐹\u0001㐽\u0001㑇\u0001㑈\u0001㑔\u0001㑩\u0001�
   /* ---------- 点击分区 ---------- */
   var tStart = null;
   var lastTouchAt = 0;
+  /// 这次触摸是否落在工具栏/面板/目录上（拖进度条、点按钮）
+  var tInHud = false;
 
   document.addEventListener("touchstart", function (e) {
+    // 工具栏内部的手势不参与正文判断：否则从右侧拖进度条会被当成
+    // 「左滑加书签」（右侧 55%~88% 起手左滑 = toggleBookmark），
+    // 拖完还可能被当成轻点把工具栏收起来。
+    tInHud = !!(e.target && e.target.closest &&
+      e.target.closest("#hud, #panel, #toc, .panel, .toc, .sel-toolbar"));
     tStart = { x: e.touches[0].clientX, y: e.touches[0].clientY, t: Date.now() };
   }, { passive: true });
 
   document.addEventListener("touchend", function (e) {
     lastTouchAt = Date.now();
+    if (tInHud) {
+      tInHud = false;
+      tStart = null;
+      return;
+    }
     if (!tStart) return;
     var t = e.changedTouches[0];
     var rawDx = t.clientX - tStart.x;
@@ -1827,6 +1866,40 @@ var S2T_SRC = "㐷\u0001㐹\u0001㐽\u0001㑇\u0001㑈\u0001㑔\u0001㑩\u0001�
     bar.style.left = x + "px";
     bar.style.top = y + "px";
     selToolbar = bar;
+  }
+
+  /// 从任意节点往上找它所属的 section 和顶层块序号。
+  ///
+  /// 注意：selectionchange 里一直调用 locInfoOf，但这个函数以前**根本没定义**，
+  /// 每次都抛 ReferenceError、被 catch 吞掉，于是 lastSelInfo 恒为 null，
+  /// 传给 Flutter 的 spine/blockIndex 永远是 0 ——
+  /// 「本章节」匹配不到任何章、「此处」改到第一段，只有「全书」看着有效。
+  function locInfoOf(node) {
+    if (!node) return null;
+    var el = node.nodeType === 1 ? node : node.parentNode;
+    if (!el || !el.closest) return null;
+    var sec = el.closest("section.ch");
+    if (!sec) return null;
+
+    // 找到该节点所在的「section 的直接子块」
+    var blk = null;
+    var cur = el;
+    while (cur && cur !== sec) {
+      if (cur.parentNode === sec && isBlockTag(cur.tagName)) {
+        blk = cur;
+        break;
+      }
+      cur = cur.parentNode;
+    }
+    if (!blk) return null;
+
+    var bIdx = 0;
+    for (var i = 0; i < sec.children.length; i++) {
+      var c = sec.children[i];
+      if (c === blk) break;
+      if (isBlockTag(c.tagName)) bIdx++;
+    }
+    return { spine: +sec.dataset.spine, blockIndex: bIdx };
   }
 
   function locInfo() {
