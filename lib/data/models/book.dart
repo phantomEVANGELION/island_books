@@ -1,3 +1,5 @@
+import '../../core/app_paths.dart';
+
 /// 一本书的元数据。
 /// 只存「书是什么」，不存「书的内容」——内容在磁盘上的解压目录里。
 class Book {
@@ -65,9 +67,10 @@ class Book {
         id: m['id'] as int?,
         title: (m['title'] as String?) ?? '未命名',
         author: (m['author'] as String?) ?? '',
-        coverPath: m['cover_path'] as String?,
+        coverPath: m['cover_path'] == null ? null : AppPaths.resolve(m['cover_path'] as String),
         filePath: (m['file_path'] as String?) ?? '',
-        bookDir: (m['book_dir'] as String?) ?? '',
+        // 存的是绝对路径，但 iOS 重装后沙盒 UUID 会变 → 统一按当前沙盒重新拼
+        bookDir: AppPaths.resolveBookDir((m['book_dir'] as String?) ?? ''),
         format: (m['format'] as String?) ?? 'epub',
         fileSize: (m['file_size'] as int?) ?? 0,
         chapterCount: (m['chapter_count'] as int?) ?? 0,
