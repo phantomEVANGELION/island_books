@@ -6,6 +6,12 @@
 
 > 个人自用项目，持续打磨中。31 个 Dart 文件，约 7300 行。
 
+<p align="center">
+  <img src="docs/screenshots/shelf.jpg" width="42%" alt="书架：分组 + 最近阅读" />
+  &nbsp;&nbsp;&nbsp;
+  <img src="docs/screenshots/reading.png" width="42%" alt="阅读页：滚动阅读 + 底栏进度条" />
+</p>
+
 ---
 
 ## 解决的几个具体问题
